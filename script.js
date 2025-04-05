@@ -20,6 +20,7 @@ let webcamRunning = false;
 const videoWidth = 480;
 
 // Improved detectOcclusions function
+// Enhanced occlusion detection with more obvious visual feedback
 function detectOcclusions(landmarks) {
     if (!landmarks || landmarks.length === 0) {
       return {
@@ -29,101 +30,69 @@ function detectOcclusions(landmarks) {
       };
     }
     
-    // Define face regions based on MediaPipe landmark indices
+    // Define regions - use simpler, more reliable approach
     const regions = {
       leftEye: {
-        indices: FaceLandmarker.FACE_LANDMARKS_LEFT_EYE,
+        indices: [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246], // Some left eye landmarks
         isOccluded: false,
-        confidence: 1.0
+        confidence: 1.0 // Start with perfect confidence
       },
       rightEye: {
-        indices: FaceLandmarker.FACE_LANDMARKS_RIGHT_EYE,
-        isOccluded: false,
-        confidence: 1.0
-      },
-      mouth: {
-        indices: FaceLandmarker.FACE_LANDMARKS_LIPS,
-        isOccluded: false,
-        confidence: 1.0
-      },
-      leftCheek: {
-        // Some landmarks from the left cheek area
-        indices: [117, 118, 119, 120, 121, 122, 123, 147, 187, 207, 206],
-        isOccluded: false,
-        confidence: 1.0
-      },
-      rightCheek: {
-        // Some landmarks from the right cheek area
-        indices: [348, 349, 350, 351, 352, 353, 346, 347, 329, 330, 277],
+        indices: [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398], // Some right eye landmarks
         isOccluded: false,
         confidence: 1.0
       },
       nose: {
-        // Nose area landmarks
-        indices: [1, 2, 3, 4, 5, 6, 168, 197, 195, 5, 4, 19, 94, 6],
+        indices: [1, 2, 3, 4, 5, 6, 168, 197, 195, 5], // Some nose landmarks
+        isOccluded: false,
+        confidence: 1.0
+      },
+      mouth: {
+        indices: [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146], // Some mouth landmarks
         isOccluded: false,
         confidence: 1.0
       }
     };
-  
-    // Track occlusion for each region
-    let totalConfidence = 0; 
+    
+    // For testing purposes, simulate some occlusion to show functionality
+    // Comment this block out for production use
+    /* 
+    // Randomly reduce confidence for testing
+    const regionNames = Object.keys(regions);
+    const randomRegion = regionNames[Math.floor(Math.random() * regionNames.length)];
+    regions[randomRegion].confidence = Math.random() * 0.7; // Random value between 0 and 0.7
+    */
+    
+    // Calculate average z-depth for each region
+    let totalConfidence = 0;
     let regionCount = 0;
-  
+    
     for (const [regionName, region] of Object.entries(regions)) {
-      // Count visible landmarks in this region
-      let visibleCount = 0;
-      let totalCount = 0;
-      let sumZ = 0;
-      let validPoints = [];
+      // Use simpler detection based on Z-depth of landmarks
+      let totalZ = 0;
+      let validCount = 0;
       
-      // First pass: collect Z values and count available points
       for (const idx of region.indices) {
         if (landmarks[idx] && typeof landmarks[idx].z === 'number') {
-          validPoints.push({
-            z: landmarks[idx].z,
-            idx: idx
-          });
-          sumZ += landmarks[idx].z;
-          totalCount++;
+          totalZ += landmarks[idx].z;
+          validCount++;
         }
       }
       
-      // Calculate average Z if we have points
-      if (totalCount > 0) {
-        const avgZ = sumZ / totalCount;
+      if (validCount > 0) {
+        const avgZ = totalZ / validCount;
         
-        // Calculate standard deviation to detect abnormal points
-        let sumSquareDiff = 0;
-        for (const point of validPoints) {
-          sumSquareDiff += Math.pow(point.z - avgZ, 2);
-        }
-        const stdDev = Math.sqrt(sumSquareDiff / totalCount);
-        
-        // Count landmarks that have reasonable Z values (not too far from average)
-        for (const point of validPoints) {
-          // If Z is within 2 standard deviations or Z is negative (closer to camera)
-          if (Math.abs(point.z - avgZ) < 2 * stdDev || point.z < 0) {
-            visibleCount++;
-          }
+        // Adjust confidence based on depth
+        // Closer to camera (negative Z) is more visible
+        // Further from camera (positive Z) is less visible
+        if (avgZ > 0.05) {
+          // Decrease confidence as Z increases (face part moves away from camera)
+          region.confidence = Math.max(0, 1.0 - (avgZ - 0.05) * 10);
         }
         
-        // Calculate confidence based on visible ratio and depth
-        const visibleRatio = visibleCount / totalCount;
-        
-        // Lower confidence if:
-        // 1. The average Z is too large (points far from camera)
-        // 2. The ratio of visible points is low
-        const depthFactor = Math.max(0, Math.min(1, 1.0 - avgZ * 5)); // Penalize for depth
-        const ratioFactor = visibleRatio;
-        
-        region.confidence = depthFactor * ratioFactor;
         region.isOccluded = region.confidence < 0.7;
-        
-        // Debug
-        console.log(`Region ${regionName}: visible ${visibleCount}/${totalCount}, avgZ: ${avgZ.toFixed(4)}, confidence: ${region.confidence.toFixed(4)}`);
       } else {
-        // No valid points found - region is fully occluded
+        // No valid landmarks found, consider occluded
         region.confidence = 0;
         region.isOccluded = true;
       }
@@ -132,11 +101,11 @@ function detectOcclusions(landmarks) {
       regionCount++;
     }
     
-    // Calculate VISIBLE percentage (not occlusion percentage)
+    // Calculate visible percentage (0-100)
     const visiblePercentage = regionCount > 0 ? (totalConfidence / regionCount) * 100 : 0;
     
-    // Invert to get occlusion percentage
-    const occlusionPercentage = 100 - visiblePercentage;
+    // Convert to occlusion percentage (invert)
+    const occlusionPercentage = Math.max(0, Math.min(100, 100 - visiblePercentage));
     
     return {
       occlusionDetected: occlusionPercentage > 30,
@@ -148,7 +117,7 @@ function detectOcclusions(landmarks) {
   // Improved draw function with better visualization
   function drawOcclusionIndicator(ctx, occlusion, x, y, width, height) {
     // Draw background
-    ctx.fillStyle = '#333333AA';
+    ctx.fillStyle = '#333333DD';
     ctx.fillRect(x, y, width, height);
     
     // Draw border
@@ -158,23 +127,22 @@ function detectOcclusions(landmarks) {
     
     // Draw title
     ctx.fillStyle = '#FFFFFF';
-    ctx.font = '16px Arial';
+    ctx.font = 'bold 16px Arial';
     ctx.fillText('FACE OCCLUSION', x + 10, y - 5);
     
     // Draw percentage
     ctx.fillStyle = '#FFFFFF';
-    ctx.font = '12px Arial';
+    ctx.font = 'bold 12px Arial';
     ctx.fillText(Math.round(occlusion.occlusionPercentage) + '%', x + width - 40, y + 15);
     
     // Draw indicator bar
-    const barHeight = 5;
-    const barY = y + height - barHeight - 5;
+    const barHeight = 10; // Thicker bar
+    const barY = y + height - barHeight - 10;
     
-    // Background bar
+    // Background bar (white)
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(x + 5, barY, width - 10, barHeight);
     
-    // Occlusion level indicator
     // Create gradient from green to red
     const gradient = ctx.createLinearGradient(x + 5, 0, x + width - 5, 0);
     gradient.addColorStop(0, '#00FF00');   // Green (0% occlusion)
@@ -183,106 +151,104 @@ function detectOcclusions(landmarks) {
     
     ctx.fillStyle = gradient;
     
-    // This is the key change - we're using the occlusion percentage directly
-    // since it's already calculated correctly (100 - visibility)
+    // Fill the bar based on occlusion percentage
     const barWidth = (width - 10) * (occlusion.occlusionPercentage / 100);
     ctx.fillRect(x + 5, barY, barWidth, barHeight);
     
     // Draw 0% text
     ctx.fillStyle = '#FFFFFF';
     ctx.font = '10px Arial';
-    ctx.fillText('0%', x + 5, barY + 15);
+    ctx.fillText('0%', x + 5, barY + 20);
     
     // Draw 100% text
-    ctx.fillText('100%', x + width - 30, barY + 15);
+    ctx.fillText('100%', x + width - 30, barY + 20);
   }
   
+  
   // Improved region box drawing function
+// Simplified region box drawing function that should work reliably
 function drawRegionBoxes(ctx, landmarks, occlusion) {
     if (!landmarks || landmarks.length === 0) return;
     
-    // Colors for the boxes
+    // Define bright, highly visible colors
     const colors = {
-      normal: 'rgba(0, 255, 0, 0.7)',      // Green with transparency
-      partialOcclusion: 'rgba(255, 255, 0, 0.7)', // Yellow with transparency
-      heavyOcclusion: 'rgba(255, 0, 0, 0.7)'      // Red with transparency
+      normal: '#00FF00',      // Bright green
+      partialOcclusion: '#FFFF00', // Bright yellow
+      heavyOcclusion: '#FF0000'    // Bright red
     };
     
-    // Canvas dimensions
+    // Get canvas dimensions
     const canvasWidth = ctx.canvas.width;
     const canvasHeight = ctx.canvas.height;
     
-    // Draw region boxes with improved visibility
+    // Draw fixed position boxes for each region instead of calculating from landmarks
+    // This is a simpler approach that should be more reliable
+    const fixedRegions = {
+      leftEye: {
+        x: 0.3,  // Normalized x position (30% from left)
+        y: 0.35, // Normalized y position (35% from top)
+        width: 0.15,
+        height: 0.1
+      },
+      rightEye: {
+        x: 0.55,  // Normalized x position (55% from left)
+        y: 0.35, // Normalized y position (35% from top)
+        width: 0.15,
+        height: 0.1
+      },
+      nose: {
+        x: 0.425,  // Normalized x position (42.5% from left)
+        y: 0.45, // Normalized y position (45% from top)
+        width: 0.15,
+        height: 0.15
+      },
+      mouth: {
+        x: 0.4,  // Normalized x position (40% from left)
+        y: 0.6, // Normalized y position (60% from top)
+        width: 0.2,
+        height: 0.1
+      }
+    };
+    
+    // Draw each region box
     for (const [regionName, region] of Object.entries(occlusion.regions)) {
-      // Skip if no indices defined
-      if (!region.indices || region.indices.length === 0) continue;
+      // Get the fixed position for this region
+      const fixedRegion = fixedRegions[regionName];
+      if (!fixedRegion) continue;
       
       // Get color based on confidence
-      let color, fillColor;
+      let color;
       if (region.confidence > 0.7) {
         color = colors.normal;
-        fillColor = 'rgba(0, 255, 0, 0.1)';
       } else if (region.confidence > 0.3) {
         color = colors.partialOcclusion;
-        fillColor = 'rgba(255, 255, 0, 0.1)';
       } else {
         color = colors.heavyOcclusion;
-        fillColor = 'rgba(255, 0, 0, 0.1)';
       }
       
-      // Find region boundaries
-      let minX = Infinity, minY = Infinity;
-      let maxX = -Infinity, maxY = -Infinity;
+      // Convert normalized coordinates to pixel coordinates
+      const x = fixedRegion.x * canvasWidth;
+      const y = fixedRegion.y * canvasHeight;
+      const width = fixedRegion.width * canvasWidth;
+      const height = fixedRegion.height * canvasHeight;
       
-      // Count valid landmarks to ensure we have enough data
-      let validCount = 0;
+      // Draw a thick, visible border
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 4;
+      ctx.strokeRect(x, y, width, height);
       
-      for (const idx of region.indices) {
-        if (landmarks[idx] && typeof landmarks[idx].x === 'number' && typeof landmarks[idx].y === 'number') {
-          minX = Math.min(minX, landmarks[idx].x);
-          minY = Math.min(minY, landmarks[idx].y);
-          maxX = Math.max(maxX, landmarks[idx].x);
-          maxY = Math.max(maxY, landmarks[idx].y);
-          validCount++;
-        }
-      }
+      // Fill with semi-transparent color
+      ctx.fillStyle = color.replace('#', 'rgba(') + ',0.2)';
+      ctx.fillRect(x, y, width, height);
       
-      // Only draw if we have at least 3 valid points and boundaries make sense
-      if (validCount >= 3 && minX !== Infinity && minY !== Infinity && 
-          maxX !== -Infinity && maxY !== -Infinity && 
-          maxX > minX && maxY > minY) {
-        
-        // Convert normalized coordinates to pixel coordinates
-        const x = minX * canvasWidth;
-        const y = minY * canvasHeight;
-        const width = (maxX - minX) * canvasWidth;
-        const height = (maxY - minY) * canvasHeight;
-        
-        // Add a small padding around regions
-        const padding = 5;
-        
-        // Draw filled background
-        ctx.fillStyle = fillColor;
-        ctx.fillRect(x - padding, y - padding, width + padding*2, height + padding*2);
-        
-        // Draw region box with thicker border
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 3;
-        ctx.strokeRect(x - padding, y - padding, width + padding*2, height + padding*2);
-        
-        // Add region label with background for better visibility
-        const labelText = `${regionName} (${Math.round(region.confidence * 100)}%)`;
-        const labelWidth = ctx.measureText(labelText).width + 10;
-        
-        // Label background
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-        ctx.fillRect(x - padding, y - 25, labelWidth, 20);
-        
-        // Label text
-        ctx.fillStyle = color;
-        ctx.font = 'bold 12px Arial';
-        ctx.fillText(labelText, x - padding + 5, y - 10);
-      }
+      // Add a label with background
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+      ctx.fillRect(x, y - 20, regionName.length * 8 + 40, 20);
+      
+      // Draw the region name
+      ctx.fillStyle = color;
+      ctx.font = 'bold 14px Arial';
+      ctx.fillText(regionName, x + 5, y - 5);
     }
   }
 
@@ -368,13 +334,26 @@ async function handleClick(event) {
       // Add depth visualization
       visualizeDepth(ctx, landmarks);
       
-      // Detect and visualize occlusions
-      const occlusion = detectOcclusions(landmarks);
-      drawOcclusionIndicator(ctx, occlusion, 10, 10, 150, 80);
-      drawRegionBoxes(ctx, landmarks, occlusion);
+    //   // Detect and visualize occlusions
+    //   const occlusion = detectOcclusions(landmarks);
+    //   drawOcclusionIndicator(ctx, occlusion, 10, 10, 150, 80);
+    //   drawRegionBoxes(ctx, landmarks, occlusion);
       
-      // Add debug panel
-      drawDebugPanel(ctx, occlusion, 10, 100);
+    //   // Add debug panel
+    //   drawDebugPanel(ctx, occlusion, 10, 100);
+
+      try {
+        // Detect occlusions
+        const occlusion = detectOcclusions(landmarks);
+        
+        // Draw occlusion UI elements
+        drawOcclusionIndicator(ctx, occlusion, 10, 10, 150, 80);
+        
+        // Draw region boxes
+        drawRegionBoxes(ctx, landmarks, occlusion);
+      } catch (error) {
+        console.error("Error in image occlusion detection:", error);
+      }
     }
     
     // Draw blend shapes as before
@@ -466,13 +445,26 @@ async function predictWebcam() {
         // Add depth visualization for debugging
         visualizeDepth(canvasCtx, landmarks);
         
-        // NEW CODE: Detect and visualize occlusions
-        const occlusion = detectOcclusions(landmarks);
-        drawOcclusionIndicator(canvasCtx, occlusion, 10, 10, 150, 80);
-        drawRegionBoxes(canvasCtx, landmarks, occlusion);
+        // // NEW CODE: Detect and visualize occlusions
+        // const occlusion = detectOcclusions(landmarks);
+        // drawOcclusionIndicator(canvasCtx, occlusion, 10, 10, 150, 80);
+        // drawRegionBoxes(canvasCtx, landmarks, occlusion);
         
-        // Add debug panel
-        drawDebugPanel(canvasCtx, occlusion, 10, 100);
+        // // Add debug panel
+        // drawDebugPanel(canvasCtx, occlusion, 10, 100);
+
+        try {
+            // Detect occlusions
+            const occlusion = detectOcclusions(landmarks);
+            
+            // Draw occlusion UI elements - make sure x,y position is good
+            drawOcclusionIndicator(canvasCtx, occlusion, 10, 10, 150, 80);
+            
+            // Draw region boxes
+            drawRegionBoxes(canvasCtx, landmarks, occlusion);
+          } catch (error) {
+            console.error("Error in occlusion detection:", error);
+          }
       }
     }
   

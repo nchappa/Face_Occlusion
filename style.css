@@ -180,3 +180,7 @@ footer {
   position: absolute;
   pointer-events: none;
 }
+
+#output_canvas {
+  z-index: 1;
+}
