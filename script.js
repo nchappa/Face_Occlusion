@@ -19,6 +19,7 @@ let enableWebcamButton;
 let webcamRunning = false;
 const videoWidth = 480;
 
+// Improved detectOcclusions function
 function detectOcclusions(landmarks) {
     if (!landmarks || landmarks.length === 0) {
       return {
@@ -45,57 +46,106 @@ function detectOcclusions(landmarks) {
         isOccluded: false,
         confidence: 1.0
       },
-      // Add more regions as needed
+      leftCheek: {
+        // Some landmarks from the left cheek area
+        indices: [117, 118, 119, 120, 121, 122, 123, 147, 187, 207, 206],
+        isOccluded: false,
+        confidence: 1.0
+      },
+      rightCheek: {
+        // Some landmarks from the right cheek area
+        indices: [348, 349, 350, 351, 352, 353, 346, 347, 329, 330, 277],
+        isOccluded: false,
+        confidence: 1.0
+      },
+      nose: {
+        // Nose area landmarks
+        indices: [1, 2, 3, 4, 5, 6, 168, 197, 195, 5, 4, 19, 94, 6],
+        isOccluded: false,
+        confidence: 1.0
+      }
     };
   
-    // Check occlusion for each region
-    let totalOcclusion = 0;
+    // Track occlusion for each region
+    let totalConfidence = 0; 
     let regionCount = 0;
   
     for (const [regionName, region] of Object.entries(regions)) {
-      // Calculate the average z-coordinate (depth) of the region
-      let avgZ = 0;
-      let landmarkCount = 0;
+      // Count visible landmarks in this region
+      let visibleCount = 0;
+      let totalCount = 0;
+      let sumZ = 0;
+      let validPoints = [];
       
+      // First pass: collect Z values and count available points
       for (const idx of region.indices) {
-        if (landmarks[idx]) {
-          avgZ += landmarks[idx].z;
-          landmarkCount++;
+        if (landmarks[idx] && typeof landmarks[idx].z === 'number') {
+          validPoints.push({
+            z: landmarks[idx].z,
+            idx: idx
+          });
+          sumZ += landmarks[idx].z;
+          totalCount++;
         }
       }
       
-      if (landmarkCount > 0) {
-        avgZ /= landmarkCount;
+      // Calculate average Z if we have points
+      if (totalCount > 0) {
+        const avgZ = sumZ / totalCount;
         
-        // Check for abnormal depth as indication of occlusion
-        if (avgZ > 0.1) { // Threshold can be adjusted
-          region.isOccluded = true;
-          region.confidence = Math.max(0, 1.0 - (avgZ - 0.1) * 5);
+        // Calculate standard deviation to detect abnormal points
+        let sumSquareDiff = 0;
+        for (const point of validPoints) {
+          sumSquareDiff += Math.pow(point.z - avgZ, 2);
+        }
+        const stdDev = Math.sqrt(sumSquareDiff / totalCount);
+        
+        // Count landmarks that have reasonable Z values (not too far from average)
+        for (const point of validPoints) {
+          // If Z is within 2 standard deviations or Z is negative (closer to camera)
+          if (Math.abs(point.z - avgZ) < 2 * stdDev || point.z < 0) {
+            visibleCount++;
+          }
         }
         
-        // Calculate region visibility (inverse of occlusion)
-        const regionVisibility = 1.0 - region.confidence;
-        totalOcclusion += regionVisibility;
+        // Calculate confidence based on visible ratio and depth
+        const visibleRatio = visibleCount / totalCount;
+        
+        // Lower confidence if:
+        // 1. The average Z is too large (points far from camera)
+        // 2. The ratio of visible points is low
+        const depthFactor = Math.max(0, Math.min(1, 1.0 - avgZ * 5)); // Penalize for depth
+        const ratioFactor = visibleRatio;
+        
+        region.confidence = depthFactor * ratioFactor;
+        region.isOccluded = region.confidence < 0.7;
+        
+        // Debug
+        console.log(`Region ${regionName}: visible ${visibleCount}/${totalCount}, avgZ: ${avgZ.toFixed(4)}, confidence: ${region.confidence.toFixed(4)}`);
       } else {
-        // If no landmarks were found for this region, consider it occluded
-        region.isOccluded = true;
+        // No valid points found - region is fully occluded
         region.confidence = 0;
-        totalOcclusion += 1.0;
+        region.isOccluded = true;
       }
       
+      totalConfidence += region.confidence;
       regionCount++;
     }
     
-    // Calculate overall occlusion percentage
-    const occlusionPercentage = regionCount > 0 ? (totalOcclusion / regionCount) * 100 : 0;
+    // Calculate VISIBLE percentage (not occlusion percentage)
+    const visiblePercentage = regionCount > 0 ? (totalConfidence / regionCount) * 100 : 0;
+    
+    // Invert to get occlusion percentage
+    const occlusionPercentage = 100 - visiblePercentage;
     
     return {
-      occlusionDetected: occlusionPercentage > 20, // Threshold can be adjusted
+      occlusionDetected: occlusionPercentage > 30,
       occlusionPercentage: occlusionPercentage,
       regions: regions
     };
   }
   
+  // Improved draw function with better visualization
   function drawOcclusionIndicator(ctx, occlusion, x, y, width, height) {
     // Draw background
     ctx.fillStyle = '#333333AA';
@@ -124,61 +174,83 @@ function detectOcclusions(landmarks) {
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(x + 5, barY, width - 10, barHeight);
     
-    // Occlusion level indicator with gradient from green to red
+    // Occlusion level indicator
+    // Create gradient from green to red
     const gradient = ctx.createLinearGradient(x + 5, 0, x + width - 5, 0);
-    gradient.addColorStop(0, '#00FF00');
-    gradient.addColorStop(0.5, '#FFFF00');
-    gradient.addColorStop(1, '#FF0000');
+    gradient.addColorStop(0, '#00FF00');   // Green (0% occlusion)
+    gradient.addColorStop(0.5, '#FFFF00'); // Yellow (50% occlusion)
+    gradient.addColorStop(1, '#FF0000');   // Red (100% occlusion)
     
     ctx.fillStyle = gradient;
-    ctx.fillRect(x + 5, barY, (width - 10) * (occlusion.occlusionPercentage / 100), barHeight);
     
-    // Draw 0% and 100% labels
+    // This is the key change - we're using the occlusion percentage directly
+    // since it's already calculated correctly (100 - visibility)
+    const barWidth = (width - 10) * (occlusion.occlusionPercentage / 100);
+    ctx.fillRect(x + 5, barY, barWidth, barHeight);
+    
+    // Draw 0% text
     ctx.fillStyle = '#FFFFFF';
     ctx.font = '10px Arial';
     ctx.fillText('0%', x + 5, barY + 15);
+    
+    // Draw 100% text
     ctx.fillText('100%', x + width - 30, barY + 15);
   }
   
-  function drawRegionBoxes(ctx, landmarks, occlusion) {
+  // Improved region box drawing function
+function drawRegionBoxes(ctx, landmarks, occlusion) {
     if (!landmarks || landmarks.length === 0) return;
     
     // Colors for the boxes
     const colors = {
-      normal: '#00FF00',  // Green
-      partialOcclusion: '#FFFF00',  // Yellow
-      heavyOcclusion: '#FF0000'     // Red
+      normal: 'rgba(0, 255, 0, 0.7)',      // Green with transparency
+      partialOcclusion: 'rgba(255, 255, 0, 0.7)', // Yellow with transparency
+      heavyOcclusion: 'rgba(255, 0, 0, 0.7)'      // Red with transparency
     };
     
-    // Draw region boxes
+    // Canvas dimensions
+    const canvasWidth = ctx.canvas.width;
+    const canvasHeight = ctx.canvas.height;
+    
+    // Draw region boxes with improved visibility
     for (const [regionName, region] of Object.entries(occlusion.regions)) {
+      // Skip if no indices defined
+      if (!region.indices || region.indices.length === 0) continue;
+      
       // Get color based on confidence
-      let color;
+      let color, fillColor;
       if (region.confidence > 0.7) {
         color = colors.normal;
+        fillColor = 'rgba(0, 255, 0, 0.1)';
       } else if (region.confidence > 0.3) {
         color = colors.partialOcclusion;
+        fillColor = 'rgba(255, 255, 0, 0.1)';
       } else {
         color = colors.heavyOcclusion;
+        fillColor = 'rgba(255, 0, 0, 0.1)';
       }
       
       // Find region boundaries
       let minX = Infinity, minY = Infinity;
       let maxX = -Infinity, maxY = -Infinity;
       
+      // Count valid landmarks to ensure we have enough data
+      let validCount = 0;
+      
       for (const idx of region.indices) {
-        if (landmarks[idx]) {
+        if (landmarks[idx] && typeof landmarks[idx].x === 'number' && typeof landmarks[idx].y === 'number') {
           minX = Math.min(minX, landmarks[idx].x);
           minY = Math.min(minY, landmarks[idx].y);
           maxX = Math.max(maxX, landmarks[idx].x);
           maxY = Math.max(maxY, landmarks[idx].y);
+          validCount++;
         }
       }
       
-      // Draw box if we have valid boundaries
-      if (minX !== Infinity && minY !== Infinity && maxX !== -Infinity && maxY !== -Infinity) {
-        const canvasWidth = ctx.canvas.width;
-        const canvasHeight = ctx.canvas.height;
+      // Only draw if we have at least 3 valid points and boundaries make sense
+      if (validCount >= 3 && minX !== Infinity && minY !== Infinity && 
+          maxX !== -Infinity && maxY !== -Infinity && 
+          maxX > minX && maxY > minY) {
         
         // Convert normalized coordinates to pixel coordinates
         const x = minX * canvasWidth;
@@ -186,15 +258,30 @@ function detectOcclusions(landmarks) {
         const width = (maxX - minX) * canvasWidth;
         const height = (maxY - minY) * canvasHeight;
         
-        // Draw region box
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
-        ctx.strokeRect(x, y, width, height);
+        // Add a small padding around regions
+        const padding = 5;
         
-        // Add region label
+        // Draw filled background
+        ctx.fillStyle = fillColor;
+        ctx.fillRect(x - padding, y - padding, width + padding*2, height + padding*2);
+        
+        // Draw region box with thicker border
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 3;
+        ctx.strokeRect(x - padding, y - padding, width + padding*2, height + padding*2);
+        
+        // Add region label with background for better visibility
+        const labelText = `${regionName} (${Math.round(region.confidence * 100)}%)`;
+        const labelWidth = ctx.measureText(labelText).width + 10;
+        
+        // Label background
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(x - padding, y - 25, labelWidth, 20);
+        
+        // Label text
         ctx.fillStyle = color;
-        ctx.font = '12px Arial';
-        ctx.fillText(regionName, x, y - 5);
+        ctx.font = 'bold 12px Arial';
+        ctx.fillText(labelText, x - padding + 5, y - 10);
       }
     }
   }
@@ -278,10 +365,16 @@ async function handleClick(event) {
       drawingUtils.drawConnectors(landmarks, FaceLandmarker.FACE_LANDMARKS_RIGHT_IRIS, { color: "#FF3030" });
       drawingUtils.drawConnectors(landmarks, FaceLandmarker.FACE_LANDMARKS_LEFT_IRIS, { color: "#30FF30" });
       
-      // NEW CODE: Detect and visualize occlusions
+      // Add depth visualization
+      visualizeDepth(ctx, landmarks);
+      
+      // Detect and visualize occlusions
       const occlusion = detectOcclusions(landmarks);
       drawOcclusionIndicator(ctx, occlusion, 10, 10, 150, 80);
       drawRegionBoxes(ctx, landmarks, occlusion);
+      
+      // Add debug panel
+      drawDebugPanel(ctx, occlusion, 10, 100);
     }
     
     // Draw blend shapes as before
@@ -370,10 +463,16 @@ async function predictWebcam() {
         drawingUtils.drawConnectors(landmarks, FaceLandmarker.FACE_LANDMARKS_RIGHT_IRIS, { color: "#FF3030" });
         drawingUtils.drawConnectors(landmarks, FaceLandmarker.FACE_LANDMARKS_LEFT_IRIS, { color: "#30FF30" });
         
+        // Add depth visualization for debugging
+        visualizeDepth(canvasCtx, landmarks);
+        
         // NEW CODE: Detect and visualize occlusions
         const occlusion = detectOcclusions(landmarks);
         drawOcclusionIndicator(canvasCtx, occlusion, 10, 10, 150, 80);
         drawRegionBoxes(canvasCtx, landmarks, occlusion);
+        
+        // Add debug panel
+        drawDebugPanel(canvasCtx, occlusion, 10, 100);
       }
     }
   
