@@ -20,90 +20,96 @@ let webcamRunning = false;
 const videoWidth = 480;
 
 // Basic occlusion detection function
+// Improved occlusion detection function
 function detectOcclusions(landmarks) {
-  // Default return when no landmarks
-  if (!landmarks || landmarks.length === 0) {
+    // Default return when no landmarks
+    if (!landmarks || landmarks.length === 0) {
+      return {
+        occlusionDetected: false,
+        occlusionPercentage: 0
+      };
+    }
+    
+    // Check if face is turned away from camera
+    // We'll use the position of nose tip relative to face center
+    const noseTipIndex = 4; // MediaPipe landmark index for nose tip
+    const leftCheekIndex = 234; // Left cheek landmark
+    const rightCheekIndex = 454; // Right cheek landmark
+    
+    // Make sure landmarks exist
+    if (!landmarks[noseTipIndex] || !landmarks[leftCheekIndex] || !landmarks[rightCheekIndex]) {
+      return {
+        occlusionDetected: false,
+        occlusionPercentage: 0
+      };
+    }
+    
+    // Get landmark positions
+    const noseTip = landmarks[noseTipIndex];
+    const leftCheek = landmarks[leftCheekIndex];
+    const rightCheek = landmarks[rightCheekIndex];
+    
+    // Calculate face center
+    const centerX = (leftCheek.x + rightCheek.x) / 2;
+    
+    // Calculate how much face is turned (based on nose position relative to center)
+    // This gives us a value that increases as face turns away
+    const faceAngleAmount = Math.abs(noseTip.x - centerX) * 10;
+    
+    // Use Z coordinate of nose for depth occlusion
+    // Higher positive Z values mean more occlusion
+    const depthAmount = Math.max(0, noseTip.z * 10);
+    
+    // Combine face angle and depth for overall occlusion
+    const occlusionPercentage = Math.min(100, Math.max(0, 
+      (faceAngleAmount * 80) + (depthAmount * 100)
+    ));
+    
     return {
-      occlusionDetected: false,
-      occlusionPercentage: 0
+      occlusionDetected: occlusionPercentage > 20,
+      occlusionPercentage: Math.round(occlusionPercentage)
     };
   }
   
-  // Simple occlusion detection: use average Z value
-  let totalZ = 0;
-  let count = 0;
-  
-  for (let i = 0; i < landmarks.length; i++) {
-    if (landmarks[i] && landmarks[i].z !== undefined) {
-      totalZ += landmarks[i].z;
-      count++;
-    }
+  // Draw the occlusion meter
+  function drawOcclusionMeter(ctx, occlusion, x, y) {
+    const width = 150;
+    const height = 50;
+    
+    // Draw background
+    ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+    ctx.fillRect(x, y, width, height);
+    
+    // Draw border
+    ctx.strokeStyle = "white";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, width, height);
+    
+    // Draw title
+    ctx.fillStyle = "white";
+    ctx.font = "bold 14px Arial";
+    ctx.fillText("FACE OCCLUSION", x + 10, y + 20);
+    
+    // Draw percentage
+    ctx.fillStyle = "white";
+    ctx.font = "bold 12px Arial";
+    ctx.fillText(occlusion.occlusionPercentage + "%", x + width - 40, y + 20);
+    
+    // Draw meter bar background
+    ctx.fillStyle = "white";
+    ctx.fillRect(x + 10, y + 30, width - 20, 10);
+    
+    // Create gradient (green to red)
+    const gradient = ctx.createLinearGradient(x + 10, 0, x + width - 10, 0);
+    gradient.addColorStop(0, "#00FF00");   // Bright green
+    gradient.addColorStop(0.5, "#FFFF00"); // Bright yellow
+    gradient.addColorStop(1, "#FF0000");   // Bright red
+    
+    // Draw meter fill based on percentage
+    ctx.fillStyle = gradient;
+    const fillWidth = (width - 20) * (occlusion.occlusionPercentage / 100);
+    ctx.fillRect(x + 10, y + 30, fillWidth, 10);
   }
-  
-  // Calculate average Z (depth)
-  const avgZ = count > 0 ? totalZ / count : 0;
-  
-  // Estimate occlusion percentage based on Z depth
-  // Negative Z is closer to camera (less occluded)
-  // Positive Z is further from camera (more occluded)
-  let occlusionPercentage = 0;
-  
-  if (avgZ > 0.1) {
-    // High positive Z indicates occlusion
-    occlusionPercentage = Math.min(100, avgZ * 200);
-  } else if (avgZ > 0) {
-    // Small positive Z indicates minor occlusion
-    occlusionPercentage = avgZ * 100;
-  } else {
-    // Negative Z indicates face is visible (facing camera)
-    occlusionPercentage = 0;
-  }
-  
-  return {
-    occlusionDetected: occlusionPercentage > 30,
-    occlusionPercentage: Math.round(occlusionPercentage)
-  };
-}
-
-// Draw the occlusion meter
-function drawOcclusionMeter(ctx, occlusion, x, y) {
-  const width = 150;
-  const height = 50;
-  
-  // Draw background
-  ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
-  ctx.fillRect(x, y, width, height);
-  
-  // Draw border
-  ctx.strokeStyle = "white";
-  ctx.lineWidth = 2;
-  ctx.strokeRect(x, y, width, height);
-  
-  // Draw title
-  ctx.fillStyle = "white";
-  ctx.font = "14px Arial";
-  ctx.fillText("FACE OCCLUSION", x + 10, y + 20);
-  
-  // Draw percentage
-  ctx.fillStyle = "white";
-  ctx.font = "12px Arial";
-  ctx.fillText(occlusion.occlusionPercentage + "%", x + width - 40, y + 20);
-  
-  // Draw meter bar background
-  ctx.fillStyle = "white";
-  ctx.fillRect(x + 10, y + 30, width - 20, 10);
-  
-  // Create gradient (green to red)
-  const gradient = ctx.createLinearGradient(x + 10, 0, x + width - 10, 0);
-  gradient.addColorStop(0, "green");
-  gradient.addColorStop(0.5, "yellow");
-  gradient.addColorStop(1, "red");
-  
-  // Draw meter fill based on percentage
-  ctx.fillStyle = gradient;
-  const fillWidth = (width - 20) * (occlusion.occlusionPercentage / 100);
-  ctx.fillRect(x + 10, y + 30, fillWidth, 10);
-}
 
 // Before we can use HandLandmarker class we must wait for it to finish
 // loading. Machine Learning models can be large and take a moment to
