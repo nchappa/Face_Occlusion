@@ -149,3 +149,34 @@ footer {
   align-items: center;
   background-color: #007f8b;
 }
+
+/* Styling for the occlusion indicator */
+.occlusion-indicator {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  background-color: rgba(0, 0, 0, 0.7);
+  border: 2px solid white;
+  border-radius: 5px;
+  padding: 10px;
+  color: white;
+  font-family: Arial, sans-serif;
+  z-index: 10;
+}
+
+/* Styling for face region labels */
+.region-label {
+  color: white;
+  font-size: 12px;
+  background-color: rgba(0, 0, 0, 0.6);
+  padding: 2px 5px;
+  border-radius: 3px;
+  pointer-events: none;
+}
+
+/* Additional style for the canvas to ensure proper layering */
+.canvas {
+  z-index: 1;
+  position: absolute;
+  pointer-events: none;
+}
