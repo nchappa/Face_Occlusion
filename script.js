@@ -19,128 +19,59 @@ let enableWebcamButton;
 let webcamRunning = false;
 const videoWidth = 480;
 
-// Enhanced occlusion detection function
+// Improved occlusion detection function
 function detectOcclusions(landmarks) {
-    // Case 1: No face detected - show maximum occlusion
-    if (!landmarks || landmarks.length === 0 || !results.faceLandmarks || results.faceLandmarks.length === 0) {
+    // Default return when no landmarks
+    if (!landmarks || landmarks.length === 0) {
       return {
-        occlusionDetected: true,
-        occlusionPercentage: 100
+        occlusionDetected: false,
+        occlusionPercentage: 0
       };
     }
-    
-    // Define key facial landmark indices for specific regions
-    const regions = {
-      leftEye: [33, 7, 163, 144, 145, 153, 154, 155, 133],
-      rightEye: [362, 382, 381, 380, 374, 373, 390, 249, 263],
-      nose: [1, 2, 3, 4, 5, 6, 168, 197, 195],
-      mouth: [61, 185, 40, 39, 37, 0, 267, 269, 270, 409],
-      leftCheek: [203, 123, 66, 107, 105, 47],
-      rightCheek: [423, 351, 427, 280, 411, 337]
-    };
-    
-    // Track occlusion for each region
-    const regionOcclusion = {};
-    let totalOcclusion = 0;
-    
-    // Check each region
-    Object.keys(regions).forEach(regionName => {
-      const indices = regions[regionName];
-      let visibleCount = 0;
-      let totalPoints = indices.length;
-      let avgZ = 0;
-      
-      // Check each landmark in this region
-      indices.forEach(idx => {
-        if (landmarks[idx]) {
-          // Use Z value to determine visibility
-          // Negative Z is closer to camera, positive Z is further away
-          avgZ += landmarks[idx].z;
-          
-          // Consider a point visible if Z is below threshold
-          if (landmarks[idx].z < 0.1) {
-            visibleCount++;
-          }
-        }
-      });
-      
-      avgZ = totalPoints > 0 ? avgZ / totalPoints : 0;
-      
-      // Calculate occlusion percentage for this region
-      let regionOcclusionPct = 0;
-      
-      if (totalPoints === 0) {
-        regionOcclusionPct = 100; // Fully occluded if no points
-      } else {
-        // Calculate based on visible points ratio and avg depth
-        const visibilityRatio = visibleCount / totalPoints;
-        const depthFactor = Math.min(1, Math.max(0, avgZ * 5));
-        
-        // Combine factors - higher values mean more occlusion
-        regionOcclusionPct = (1 - visibilityRatio) * 50 + depthFactor * 50;
-      }
-      
-      regionOcclusion[regionName] = regionOcclusionPct;
-      totalOcclusion += regionOcclusionPct;
-    });
-    
-    // Overall occlusion is average of all regions
-    const overallOcclusion = Math.round(totalOcclusion / Object.keys(regions).length);
     
     // Check if face is turned away from camera
-    const noseTipIndex = 4; // Nose tip
-    const leftCheekIndex = 234; // Left cheek
-    const rightCheekIndex = 454; // Right cheek
+    // We'll use the position of nose tip relative to face center
+    const noseTipIndex = 4; // MediaPipe landmark index for nose tip
+    const leftCheekIndex = 234; // Left cheek landmark
+    const rightCheekIndex = 454; // Right cheek landmark
     
-    if (landmarks[noseTipIndex] && landmarks[leftCheekIndex] && landmarks[rightCheekIndex]) {
-      // Calculate face center
-      const centerX = (landmarks[leftCheekIndex].x + landmarks[rightCheekIndex].x) / 2;
-      
-      // Calculate how much face is turned (based on nose position relative to center)
-      const faceAngleAmount = Math.abs(landmarks[noseTipIndex].x - centerX) * 10;
-      
-      // Add face angle component to occlusion
-      const faceAngleOcclusion = Math.min(100, faceAngleAmount * 80);
-      
-      // Combine with region-based occlusion (weighted)
-      const finalOcclusion = Math.round((overallOcclusion * 0.7) + (faceAngleOcclusion * 0.3));
-      
+    // Make sure landmarks exist
+    if (!landmarks[noseTipIndex] || !landmarks[leftCheekIndex] || !landmarks[rightCheekIndex]) {
       return {
-        occlusionDetected: finalOcclusion > 30,
-        occlusionPercentage: finalOcclusion
+        occlusionDetected: false,
+        occlusionPercentage: 0
       };
     }
     
-    // Fallback if face landmarks missing
+    // Get landmark positions
+    const noseTip = landmarks[noseTipIndex];
+    const leftCheek = landmarks[leftCheekIndex];
+    const rightCheek = landmarks[rightCheekIndex];
+    
+    // Calculate face center
+    const centerX = (leftCheek.x + rightCheek.x) / 2;
+    
+    // Calculate how much face is turned (based on nose position relative to center)
+    // This gives us a value that increases as face turns away
+    const faceAngleAmount = Math.abs(noseTip.x - centerX) * 10;
+    
+    // Use Z coordinate of nose for depth occlusion
+    // Higher positive Z values mean more occlusion
+    const depthAmount = Math.max(0, noseTip.z * 10);
+    
+    // Combine face angle and depth for overall occlusion
+    const occlusionPercentage = Math.min(100, Math.max(0, 
+      (faceAngleAmount * 80) + (depthAmount * 100)
+    ));
+    
     return {
-      occlusionDetected: overallOcclusion > 30,
-      occlusionPercentage: overallOcclusion
+      occlusionDetected: occlusionPercentage > 20,
+      occlusionPercentage: Math.round(occlusionPercentage)
     };
   }
   
-  // Draw the occlusion meter with persistent display
-  let lastOcclusion = { occlusionDetected: false, occlusionPercentage: 0 };
-  let meterFadeTimer = null;
-  const meterFadeDuration = 2000; // milliseconds to keep meter visible after face disappears
-  
+  // Draw the occlusion meter
   function drawOcclusionMeter(ctx, occlusion, x, y) {
-    // Update the last known occlusion value
-    if (occlusion) {
-      lastOcclusion = occlusion;
-      // Reset fade timer when we get new occlusion data
-      clearTimeout(meterFadeTimer);
-      meterFadeTimer = null;
-    } else if (!meterFadeTimer) {
-      // Start fade timer if face disappears and timer not already running
-      meterFadeTimer = setTimeout(() => {
-        // After timer expires, set occlusion to maximum
-        lastOcclusion = { occlusionDetected: true, occlusionPercentage: 100 };
-      }, meterFadeDuration);
-    }
-    
-    // Always use lastOcclusion to ensure meter stays visible
-    const displayOcclusion = lastOcclusion;
-    
     const width = 150;
     const height = 50;
     
@@ -161,7 +92,7 @@ function detectOcclusions(landmarks) {
     // Draw percentage
     ctx.fillStyle = "white";
     ctx.font = "bold 12px Arial";
-    ctx.fillText(displayOcclusion.occlusionPercentage + "%", x + width - 40, y + 20);
+    ctx.fillText(occlusion.occlusionPercentage + "%", x + width - 40, y + 20);
     
     // Draw meter bar background
     ctx.fillStyle = "white";
@@ -175,7 +106,7 @@ function detectOcclusions(landmarks) {
     
     // Draw meter fill based on percentage
     ctx.fillStyle = gradient;
-    const fillWidth = (width - 20) * (displayOcclusion.occlusionPercentage / 100);
+    const fillWidth = (width - 20) * (occlusion.occlusionPercentage / 100);
     ctx.fillRect(x + 10, y + 30, fillWidth, 10);
   }
 
